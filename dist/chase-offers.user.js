@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Chase
 // @namespace    credit-card-offers
-// @version      0.1.5
+// @version      0.1.6
 // @description  Adds every available Chase offer (personalized carousel + full "All Offers" grid) to the currently-selected card.
 // @author       you
 // @match        https://secure.chase.com/*
@@ -519,9 +519,13 @@
 
   // ------------------------------------------------------------------
   // Confirmed via discovery mode + manual test. Two distinct offer
-  // surfaces exist on this page, both add inline (no navigation, no
-  // separate detail-page button — confirmed by manually tapping a grid
-  // tile):
+  // surfaces exist on this page. Clicking a tile on EITHER surface is a
+  // single action that both adds the offer and navigates to a detail
+  // page showing its terms and an "Added to card" confirmation — it's
+  // not two steps (no separate Add button to hunt for on that page).
+  // Confirmed getting back to the list works via plain browser back
+  // (a breadcrumb "<" also exists, but history.back() covers it and
+  // needs no selector).
   //
   // 1. A personalized carousel (~18 offers) whose tile aria-label ends
   //    in "Add Offer", e.g. "1 of 18 Turo $30 cash back Add Offer".
@@ -532,10 +536,24 @@
   //    IS the add button; there's no separate control. Loaded via
   //    vertical scroll (handled by settle()).
   //
-  // Neither surface showed a confirmed "already added" example for
-  // Chase in discovery (unlike Amex, where one was seen), so the
-  // added-state exclusion below is a best-effort guess consistent with
-  // Amex's wording rather than something directly observed on Chase.
+  // Already-added detection differs between the two, which is why only
+  // the carousel is wired into run() below:
+  // - Carousel: no already-added example has been directly observed,
+  //   but the "Add Offer" suffix is that tile's own call-to-action text
+  //   — it's a reasonable inference (not yet a confirmed observation)
+  //   that an already-added tile simply drops it, the same way Amex's
+  //   Add button disappears once used. isCarouselAddableTile() already
+  //   requires that suffix to be PRESENT, so this needs no separate
+  //   exclusion check — it degrades safely even if the inference is
+  //   wrong in the other direction (worst case: an already-added tile
+  //   still shows the suffix, and it gets clicked again).
+  // - Grid: confirmed via manual observation that Chase shows a green
+  //   checkmark icon for an already-added tile, with NO text change —
+  //   there is no positive-or-negative textual signal at all to key
+  //   off of (unlike the carousel's suffix). isGridAddableTile() can't
+  //   distinguish a checkmarked tile from an addable one, and whether
+  //   re-clicking an already-added tile is harmless or not hasn't been
+  //   confirmed. That's why processGrid() is implemented but not called.
   // ------------------------------------------------------------------
   var TILE_SELECTOR = '[data-cy="commerce-tile"], [data-testid="commerce-tile"]';
   var RIGHT_CHEVRON_SELECTOR = '[data-testid="carouselRightChevron"]';
@@ -547,16 +565,50 @@
   var GRID_PROCESSED_KEY = 'ccOffersChaseProcessedGrid';
   var MAX_NAV_CLICKS = 40; // separate from MAX_CLICKS_PER_RUN, which counts Add-clicks
 
+  // Snapshot of the offers list's own hash, taken once per run() — lets
+  // stillOnOffersList() use exact equality instead of re-testing
+  // OFFERS_ROUTE_HINT, which could plausibly also match a detail-page
+  // sub-route (e.g. "#/dashboard/merchantOffers/detail/123").
+  var listRouteHash = null;
+
+  function stillOnOffersList() {
+    return listRouteHash !== null && window.location.hash === listRouteHash;
+  }
+
+  // A tile click both adds the offer AND navigates to its detail page
+  // (confirmed by manual test) — so after every successful click, come
+  // back before looking for the next tile. Only acts if we actually
+  // left, so a click that turns out not to navigate (unexpected, but
+  // not proven impossible) doesn't trigger a stray back-navigation.
+  async function returnToOffersList() {
+    try {
+      await C.waitFor(function () {
+        return !stillOnOffersList();
+      }, 4000);
+    } catch (e) {
+      return; // never left — nothing to return from
+    }
+
+    window.history.back();
+    try {
+      await C.waitFor(stillOnOffersList, 8000);
+    } catch (e) {
+      // Didn't confirm landing back within 8s; let the caller's next
+      // loop iteration re-check naturally rather than looping here.
+    }
+    await C.settle(function () {
+      return document.querySelectorAll(TILE_SELECTOR).length;
+    });
+  }
+
   function isCarouselAddableTile(el) {
     return ADD_OFFER_SUFFIX_RE.test(C.accName(el).trim());
   }
 
-  // KNOWN GAP: ADDED_RE only catches an already-added state conveyed as
-  // text. Confirmed by manual observation that Chase's grid instead shows
-  // a green checkmark icon with no accompanying text change, so this
-  // currently can't distinguish an already-added grid tile from an
-  // addable one. That's why processGrid()/gridResult are not wired into
-  // run() below — this function is otherwise ready, just not called yet.
+  // KNOWN GAP, not yet safe to enable: see the block comment above
+  // TILE_SELECTOR. ADDED_RE only catches an already-added state conveyed
+  // as text; Chase's grid uses an icon instead, so this can't tell a
+  // checkmarked tile apart from an addable one.
   function isGridAddableTile(el) {
     var name = C.accName(el).trim();
     return !ADD_OFFER_SUFFIX_RE.test(name) && !ADDED_RE.test(name);
@@ -636,6 +688,7 @@
         added += 1;
         processed.add(key);
         saveProcessed(CAROUSEL_PROCESSED_KEY, processed);
+        await returnToOffersList();
 
         if (!guard.recordClick()) {
           t.update({ title: 'CC Offers — Chase', message: 'Stopped: hit the ' + C.MAX_CLICKS_PER_RUN + '-click safety cap.' });
@@ -702,6 +755,7 @@
         added += 1;
         processed.add(key);
         saveProcessed(GRID_PROCESSED_KEY, processed);
+        await returnToOffersList();
 
         if (!guard.recordClick()) {
           t.update({ title: 'CC Offers — Chase', message: 'Stopped: hit the ' + C.MAX_CLICKS_PER_RUN + '-click safety cap.' });
@@ -732,6 +786,10 @@
     var guard = C.runGuard(RUN_KEY);
     if (!guard) return; // already running for this render
 
+    // Snapshot now, before anything clicks and potentially navigates —
+    // this is what returnToOffersList() compares against later.
+    listRouteHash = window.location.hash;
+
     var flags = C.flags();
     var t = C.toast({ title: 'CC Offers — Chase', message: 'Loading offers…' });
     t.onStop(function () {
@@ -761,44 +819,31 @@
         var wouldAddGrid = Array.prototype.filter.call(document.querySelectorAll(TILE_SELECTOR), isGridAddableTile).length;
         t.update({
           title: 'CC Offers — Chase',
-          message: 'Dry run: would add ' + wouldAddCarousel + ' carousel + ' + wouldAddGrid + ' grid offers (grid count may grow with pagination) · clicked nothing.',
+          message: 'Dry run: would add ' + wouldAddCarousel + ' carousel offers (count may grow with pagination) · ' + wouldAddGrid + ' grid tiles matched but grid automation is currently paused · clicked nothing.',
         });
         guard.release();
         return;
       }
 
-      // ALL CLICKING PAUSED, both surfaces. Confirmed by manually clicking
-      // a grid tile: it navigates to a separate detail page showing the
-      // offer's terms and an "Added to card" state — it is NOT an inline
-      // add. That contradicts the assumption processCarousel() was built
-      // on (that an "Add Offer"-labeled tile adds without leaving the
-      // page), which was never actually live-verified — so that
-      // assumption is no longer trusted either, not just the grid's.
-      //
-      // What's missing to build this correctly:
-      //   1. Does clicking a CAROUSEL tile ALSO navigate to a detail
-      //      page, or does it genuinely add inline? Unconfirmed.
-      //   2. The detail page's real "Add to Card" button selector, and
-      //      its "Added to Card" confirmation-state selector (needed
-      //      to know whether a click there is required, or whether
-      //      landing on the page is enough).
-      //   3. A way back to the offers list from the detail page (a
-      //      Back/X control, or reliance on window.history.back()) and
-      //      that page's own route, so onOffersRoute() can recognize it.
-      //
-      // Get all three via discovery mode (`&ccoffers=debughtml`) run ON
-      // the detail page itself, plus one more manual check on a carousel
-      // tile. Once known, processCarousel()/processGrid() need a second
-      // step added: after the tile click navigates, locate and click the
-      // real Add button (if not already added), then navigate back
-      // before moving to the next tile — not the single-click-and-count
-      // logic currently written below, which assumes no such step.
-      var carouselResult = { added: 0, errors: 0, paused: true };
+      var carouselResult = await processCarousel(guard, t);
+
+      // GRID STILL PAUSED: see the block comment above TILE_SELECTOR.
+      // The click-and-return mechanics are the same as the carousel's
+      // (both implemented in processGrid() already) — what's missing is
+      // a way to tell a checkmarked (already-added) grid tile apart
+      // from an addable one, since Chase conveys that with an icon, not
+      // text. Re-clicking one is presumed low-risk (Chase's overall
+      // pattern for "already added" appears to be a read-only
+      // confirmation, not a toggle), but that's an inference, not a
+      // confirmed observation — same standard applied to the carousel
+      // and grid mechanics above before enabling them.
       var gridResult = { added: 0, errors: 0, paused: true };
 
       t.update({
         title: 'CC Offers — Chase',
-        message: 'Paused — the real add flow (tile → detail page → Add button) isn\'t confirmed yet. Nothing was clicked.',
+        message:
+          'Carousel: added ' + carouselResult.added + ', errors ' + carouselResult.errors + '. ' +
+          'Grid: paused (already-added detection not yet confirmed) — nothing clicked there.',
       });
       window.setTimeout(function () {
         t.remove();
