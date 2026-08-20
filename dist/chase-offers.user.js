@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Chase
 // @namespace    credit-card-offers
-// @version      0.1.8
+// @version      0.1.9
 // @description  Adds every available Chase offer (personalized carousel + full "All Offers" grid) to the currently-selected card.
 // @author       you
 // @match        https://secure.chase.com/*
@@ -701,10 +701,23 @@
     return C.accName(el).replace(ADD_OFFER_SUFFIX_RE, '').replace(LEADING_ORDINAL_RE, '').trim();
   }
 
+  // Bump this whenever what counts as "processed" changes semantics —
+  // e.g. adding confirmAdded() meant a click alone used to be enough to
+  // mark something processed, and now it isn't. Without this, a
+  // sessionStorage record written by an OLDER, buggier version of this
+  // script (one that marked things "processed" too eagerly) would keep
+  // suppressing real offers indefinitely under a newer, fixed version —
+  // sessionStorage survives a script update within the same tab session,
+  // it has no idea the rules for what "processed" means just changed.
+  var PROCESSED_SCHEMA_VERSION = 2;
+
   function loadProcessed(storageKey) {
     try {
       var raw = window.sessionStorage.getItem(storageKey);
-      return new Set(raw ? JSON.parse(raw) : []);
+      if (!raw) return new Set();
+      var parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== PROCESSED_SCHEMA_VERSION) return new Set(); // stale schema — discard, don't trust it
+      return new Set(parsed.keys || []);
     } catch (e) {
       return new Set();
     }
@@ -712,7 +725,7 @@
 
   function saveProcessed(storageKey, set) {
     try {
-      window.sessionStorage.setItem(storageKey, JSON.stringify(Array.from(set)));
+      window.sessionStorage.setItem(storageKey, JSON.stringify({ v: PROCESSED_SCHEMA_VERSION, keys: Array.from(set) }));
     } catch (e) {
       // sessionStorage can be unavailable in some contexts; resumability
       // is a nice-to-have, not a correctness requirement, so ignore.
@@ -863,9 +876,15 @@
     });
 
     try {
-      await C.settle(function () {
+      var tileCount = await C.settle(function () {
         return document.querySelectorAll(TILE_SELECTOR).length;
       });
+      // Cheap diagnostic, always on: if a run ever again reports 0/0
+      // with no errors, this is the first thing to check in Safari's
+      // console — distinguishes "found tiles but treated them all as
+      // already processed" from "found no tiles matching TILE_SELECTOR
+      // at all" (a page-structure change, needing discovery mode).
+      console.log('[cc-offers/chase] tiles found at settle:', tileCount);
 
       if (flags.debug) {
         var candidates = C.discoverCandidates(document);

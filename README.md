@@ -30,6 +30,25 @@ from (ask the assistant that generated this repo if you need it again).
   artificial pacing delay between tiles is much shorter than Amex's,
   since the navigation itself already provides real-world pacing.
 
+## If a run reports 0 across the board with no errors
+
+This happened once already: the resumability feature (progress tracked
+in `sessionStorage` so an interrupted run can pick back up) can work
+against you if an *older* version of the script wrongly marked
+something "processed" before `confirmAdded()` existed — sessionStorage
+survives a script update within the same tab session, so a fixed
+script would still see the old, wrong "already done" record and skip
+real offers. `PROCESSED_SCHEMA_VERSION` in `src/chase.user.js` guards
+against this going forward — any change to what "processed" means
+should bump that constant, which makes old-format stored data get
+discarded instead of trusted.
+
+If it happens again for a different reason: check Safari's console for
+`[cc-offers/chase] tiles found at settle: N`, logged on every run. `N =
+0` means `TILE_SELECTOR` matched nothing at all (a real page-structure
+change — run discovery mode) as opposed to tiles being found but all
+treated as already handled.
+
 ## Known imprecision: Chase grid already-added detection
 
 Chase marks an already-added *grid* tile with a plain green checkmark
