@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Chase
 // @namespace    credit-card-offers
-// @version      0.1.6
+// @version      0.1.7
 // @description  Adds every available Chase offer (personalized carousel + full "All Offers" grid) to the currently-selected card.
 // @author       you
 // @match        https://secure.chase.com/*
@@ -536,24 +536,24 @@
   //    IS the add button; there's no separate control. Loaded via
   //    vertical scroll (handled by settle()).
   //
-  // Already-added detection differs between the two, which is why only
-  // the carousel is wired into run() below:
+  // Already-added detection differs between the two:
   // - Carousel: no already-added example has been directly observed,
   //   but the "Add Offer" suffix is that tile's own call-to-action text
   //   — it's a reasonable inference (not yet a confirmed observation)
   //   that an already-added tile simply drops it, the same way Amex's
   //   Add button disappears once used. isCarouselAddableTile() already
   //   requires that suffix to be PRESENT, so this needs no separate
-  //   exclusion check — it degrades safely even if the inference is
-  //   wrong in the other direction (worst case: an already-added tile
-  //   still shows the suffix, and it gets clicked again).
+  //   exclusion check.
   // - Grid: confirmed via manual observation that Chase shows a green
   //   checkmark icon for an already-added tile, with NO text change —
-  //   there is no positive-or-negative textual signal at all to key
-  //   off of (unlike the carousel's suffix). isGridAddableTile() can't
-  //   distinguish a checkmarked tile from an addable one, and whether
-  //   re-clicking an already-added tile is harmless or not hasn't been
-  //   confirmed. That's why processGrid() is implemented but not called.
+  //   there is no textual signal to key off of (unlike the carousel's
+  //   suffix), so isGridAddableTile() can't distinguish a checkmarked
+  //   tile from an addable one and may click one again. Confirmed via
+  //   manual check that the detail page offers no remove/undo option,
+  //   so this is a harmless redundant round-trip (an extra navigate +
+  //   click + back cycle, and an inflated "added" count including
+  //   re-clicks of already-added tiles) rather than a real risk — not
+  //   worth blocking on, unlike the click mechanism itself was.
   // ------------------------------------------------------------------
   var TILE_SELECTOR = '[data-cy="commerce-tile"], [data-testid="commerce-tile"]';
   var RIGHT_CHEVRON_SELECTOR = '[data-testid="carouselRightChevron"]';
@@ -605,10 +605,12 @@
     return ADD_OFFER_SUFFIX_RE.test(C.accName(el).trim());
   }
 
-  // KNOWN GAP, not yet safe to enable: see the block comment above
+  // KNOWN GAP, accepted as low-risk: see the block comment above
   // TILE_SELECTOR. ADDED_RE only catches an already-added state conveyed
   // as text; Chase's grid uses an icon instead, so this can't tell a
-  // checkmarked tile apart from an addable one.
+  // checkmarked tile apart from an addable one — confirmed harmless to
+  // re-click (no remove/undo option exists), so left as-is rather than
+  // built out further.
   function isGridAddableTile(el) {
     var name = C.accName(el).trim();
     return !ADD_OFFER_SUFFIX_RE.test(name) && !ADDED_RE.test(name);
@@ -819,31 +821,23 @@
         var wouldAddGrid = Array.prototype.filter.call(document.querySelectorAll(TILE_SELECTOR), isGridAddableTile).length;
         t.update({
           title: 'CC Offers — Chase',
-          message: 'Dry run: would add ' + wouldAddCarousel + ' carousel offers (count may grow with pagination) · ' + wouldAddGrid + ' grid tiles matched but grid automation is currently paused · clicked nothing.',
+          message: 'Dry run: would add ' + wouldAddCarousel + ' carousel + ' + wouldAddGrid + ' grid offers (both counts may grow with pagination/scrolling) · clicked nothing.',
         });
         guard.release();
         return;
       }
 
       var carouselResult = await processCarousel(guard, t);
-
-      // GRID STILL PAUSED: see the block comment above TILE_SELECTOR.
-      // The click-and-return mechanics are the same as the carousel's
-      // (both implemented in processGrid() already) — what's missing is
-      // a way to tell a checkmarked (already-added) grid tile apart
-      // from an addable one, since Chase conveys that with an icon, not
-      // text. Re-clicking one is presumed low-risk (Chase's overall
-      // pattern for "already added" appears to be a read-only
-      // confirmation, not a toggle), but that's an inference, not a
-      // confirmed observation — same standard applied to the carousel
-      // and grid mechanics above before enabling them.
-      var gridResult = { added: 0, errors: 0, paused: true };
+      var gridResult = { added: 0, errors: 0 };
+      if (!guard.stopped) {
+        gridResult = await processGrid(guard, t);
+      }
 
       t.update({
         title: 'CC Offers — Chase',
         message:
           'Carousel: added ' + carouselResult.added + ', errors ' + carouselResult.errors + '. ' +
-          'Grid: paused (already-added detection not yet confirmed) — nothing clicked there.',
+          'Grid: added ' + gridResult.added + ', errors ' + gridResult.errors + '.',
       });
       window.setTimeout(function () {
         t.remove();

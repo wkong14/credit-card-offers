@@ -8,54 +8,40 @@ browser already has open and authenticated.
 Full design rationale and phased plan: see the plan this repo was built
 from (ask the assistant that generated this repo if you need it again).
 
-## Status: Phase 2 — Amex done, Chase carousel done, Chase grid paused
+## Status: Phase 2 — both issuers fully automated
 
-- **Amex** (`amex-offers.user.js`): fully automated. Clicks every
+- **Amex** (`amex-offers.user.js`): clicks every
   `[data-testid="merchantOfferListAddButton"]` on the page. Already-added
   offers don't render that button at all, so no extra skip logic was
   needed — confirmed from a real discovery dump.
-- **Chase carousel** (~18 personalized offers): fully automated.
-  Confirmed via manual test that a tile click both adds the offer AND
-  navigates to a detail page in one action (not two separate steps) —
-  the script clicks the tile, waits to land back on the offers list via
-  plain `history.back()` (confirmed working, same as Safari's own back
-  gesture), then continues to the next tile.
-- **Chase "All Offers" grid** (~107 offers): **still paused.** The
-  click-and-return mechanics are identical to the carousel's and
-  already implemented in `processGrid()` — it's just not called from
-  `run()` yet. See below for why.
+- **Chase** (`chase-offers.user.js`): automates both surfaces — the
+  personalized carousel (~18 offers) and the full "All Offers" grid
+  (~107 offers). Confirmed via manual test that a tile click both adds
+  the offer AND navigates to a detail page in one action (not a
+  separate Add button to hunt for). The script clicks the tile, waits
+  to land back on the offers list via plain `history.back()` (confirmed
+  working, same as Safari's own back gesture), then continues to the
+  next tile.
 
-## Why the Chase grid is still paused
+## Known imprecision: Chase grid already-added detection
 
-The click mechanism itself is no longer in question — confirmed by
-manual test that a grid tile click adds the offer and lands on the
-same kind of detail page as the carousel. What's still unresolved:
-**telling an already-added grid tile apart from an addable one.**
-Chase marks that state with a plain green checkmark icon and no text
-change, confirmed by looking at one — unlike the carousel, where the
-tile's own "Add Offer" label is a reasonable (if not yet directly
-observed) signal that disappears once used, the same way Amex's Add
-button disappears. There's no equivalent signal on the grid tile's
-text or aria-label to key off of.
+Chase marks an already-added *grid* tile with a plain green checkmark
+icon and no text change (confirmed by looking at one) — unlike the
+carousel, where the tile's own "Add Offer" label is a reasonable (if
+not directly observed) signal that disappears once used, the same way
+Amex's Add button disappears. There's no equivalent text signal on the
+grid tile to key off of, so `isGridAddableTile()` can occasionally
+re-click an already-added tile.
 
-Re-clicking an already-added tile is *probably* harmless — Chase's
-overall pattern for "already added" looks like a read-only
-confirmation rather than a toggle, and there's no evidence anywhere of
-a remove/undo action — but that's an inference, not a confirmed
-observation, and the same standard applied to the click mechanism
-itself before enabling it applies here too.
-
-**To finish this**, one of:
-- Confirm whether tapping an already-checkmarked grid tile's detail
-  page offers any way to remove/undo the offer (if not, it's safe to
-  enable and accept the minor inefficiency of occasionally re-clicking
-  an already-added tile), or
-- Run discovery mode with `&ccoffers=debughtml` on the grid list view
-  while a checkmarked tile is visible, to find the checkmark's actual
-  markup and add a real detection check to `isGridAddableTile()`.
-
-Either way, once resolved, add `var gridResult = await processGrid(guard, t);`
-in `run()` in place of the paused stub.
+This is accepted as-is rather than fixed further: confirmed via manual
+check that an already-added tile's detail page offers no remove/undo
+option, so the worst case is a harmless redundant round-trip (an extra
+navigate + click + back cycle) and a slightly inflated "added" count —
+not a real risk to anything already on the card. If a real detection
+check is ever wanted, run discovery mode with `&ccoffers=debughtml` on
+the grid list view while a checkmarked tile is visible to find its
+actual markup, and add a matching check to `isGridAddableTile()` in
+`src/chase.user.js`.
 
 ## One-time setup (do this first)
 
