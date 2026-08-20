@@ -5,8 +5,8 @@
 // @description  Phase 1: dumps candidate elements on the Chase merchant-offers route so real selectors can be identified. Does not click anything.
 // @author       you
 // @match        https://secure.chase.com/*
-// @updateURL    https://raw.githubusercontent.com/REPLACE_ME_GITHUB_USER/credit-card-offers/main/dist/chase-offers.user.js
-// @downloadURL  https://raw.githubusercontent.com/REPLACE_ME_GITHUB_USER/credit-card-offers/main/dist/chase-offers.user.js
+// @updateURL    https://raw.githubusercontent.com/wkong14/credit-card-offers/main/dist/chase-offers.user.js
+// @downloadURL  https://raw.githubusercontent.com/wkong14/credit-card-offers/main/dist/chase-offers.user.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
