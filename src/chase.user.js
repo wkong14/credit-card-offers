@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CC Offers — Chase (discovery build)
+// @name         CC Offers — Chase
 // @namespace    credit-card-offers
 // @version      0.1.0
-// @description  Phase 1: dumps candidate elements on the Chase merchant-offers route so real selectors can be identified. Does not click anything.
+// @description  Adds Chase's personalized carousel offers to the currently-selected card. The full "All Offers" grid is not yet automated — see README.
 // @author       you
 // @match        https://secure.chase.com/*
 // @updateURL    https://raw.githubusercontent.com/wkong14/credit-card-offers/main/dist/chase-offers.user.js
@@ -19,65 +19,203 @@
   var C = window.CCOffersCore;
   var RUN_KEY = 'chase';
 
-  // Chase serves its whole authenticated dashboard from one URL and
-  // routes internally — the merchant-offers screen lives under a hash
-  // route rather than its own page load. @match on secure.chase.com/*
-  // is intentionally broad because we don't yet know the exact route;
-  // this guard is what keeps the script inert everywhere else on the
-  // site. Confirm/tighten this string once discovery mode confirms the
-  // real route (see README "Repairing after a reskin").
+  // Chase serves its whole authenticated dashboard from one URL and routes
+  // internally — confirmed via discovery mode that the merchant-offers screen
+  // lives under a hash route. @match on secure.chase.com/* is intentionally
+  // broad because the exact route wasn't known ahead of time; this guard is
+  // what keeps the script inert everywhere else on the site.
   var OFFERS_ROUTE_HINT = /merchantOffers/i;
 
   function onOffersRoute() {
-    return OFFERS_ROUTE_HINT.test(window.location.hash || '') ||
-      OFFERS_ROUTE_HINT.test(window.location.pathname || '');
+    return OFFERS_ROUTE_HINT.test(window.location.hash || '') || OFFERS_ROUTE_HINT.test(window.location.pathname || '');
   }
 
-  function run() {
+  // ------------------------------------------------------------------
+  // Confirmed via discovery mode (Phase 1 dump). Two distinct offer
+  // surfaces exist on this page:
+  //
+  // 1. A personalized carousel (~18 offers) whose tile aria-label ends
+  //    in "Add Offer", e.g. "1 of 18 Turo $30 cash back Add Offer".
+  //    That's the surface this script automates.
+  //
+  // 2. A full "All Offers" grid (~107 offers) whose tiles carry NO such
+  //    suffix, e.g. "1 of 107 Chevron 3% cash back" — no separate Add
+  //    button exists anywhere in the DOM for these either. Whether
+  //    clicking one adds it inline or navigates to a detail page with
+  //    a DIFFERENT, unidentified Add button is unresolved — automating
+  //    it blindly risks clicking the wrong thing on a live bank account.
+  //    NOT handled here. See README "Known limitations".
+  // ------------------------------------------------------------------
+  var TILE_SELECTOR = '[data-cy="commerce-tile"], [data-testid="commerce-tile"]';
+  var RIGHT_CHEVRON_SELECTOR = '[data-testid="carouselRightChevron"]';
+  var ADD_OFFER_SUFFIX_RE = /\badd offer\s*$/i;
+  var LEADING_ORDINAL_RE = /^\d+\s+of\s+\d+\s*/i;
+
+  var PROCESSED_KEY = 'ccOffersChaseProcessedCarousel';
+  var MAX_NAV_CLICKS = 40; // separate from MAX_CLICKS_PER_RUN, which counts Add-clicks
+
+  function isCarouselAddableTile(el) {
+    return ADD_OFFER_SUFFIX_RE.test(C.accName(el).trim());
+  }
+
+  // The leading "N of M" ordinal shifts as the carousel scrolls, so it's
+  // excluded from the identity used to track what's already been clicked —
+  // merchant name + cashback amount is what's stable across renders.
+  function tileKey(el) {
+    return C.accName(el).replace(ADD_OFFER_SUFFIX_RE, '').replace(LEADING_ORDINAL_RE, '').trim();
+  }
+
+  function loadProcessed() {
+    try {
+      var raw = window.sessionStorage.getItem(PROCESSED_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  function saveProcessed(set) {
+    try {
+      window.sessionStorage.setItem(PROCESSED_KEY, JSON.stringify(Array.from(set)));
+    } catch (e) {
+      // sessionStorage can be unavailable in some contexts; resumability
+      // is a nice-to-have, not a correctness requirement, so ignore.
+    }
+  }
+
+  function countUntouchedGridTiles() {
+    return Array.prototype.filter.call(document.querySelectorAll(TILE_SELECTOR), function (el) {
+      return !isCarouselAddableTile(el);
+    }).length;
+  }
+
+  // Processes the personalized carousel. Resumable by design: progress is
+  // persisted to sessionStorage keyed by a stable per-offer identity, so
+  // if a click unexpectedly navigates away from this route (rather than
+  // adding inline, which is what's expected), a later run — triggered by
+  // the hashchange listener below once back on this route — picks up
+  // where it left off instead of re-clicking or losing count.
+  async function processCarousel(guard, t) {
+    var processed = loadProcessed();
+    var added = 0;
+    var errors = 0;
+    var navClicks = 0;
+    var stagnantRounds = 0;
+    var lastSeenCount = -1;
+
+    while (!guard.stopped) {
+      var tiles = Array.prototype.filter.call(document.querySelectorAll(TILE_SELECTOR), isCarouselAddableTile);
+      var pending = tiles.filter(function (el) {
+        return !processed.has(tileKey(el));
+      });
+
+      if (pending.length === 0) {
+        var chevron = document.querySelector(RIGHT_CHEVRON_SELECTOR);
+        var chevronDisabled = !chevron || chevron.disabled || chevron.getAttribute('aria-disabled') === 'true';
+
+        if (chevronDisabled || navClicks >= MAX_NAV_CLICKS) break;
+
+        if (tiles.length === lastSeenCount) {
+          stagnantRounds += 1;
+          if (stagnantRounds >= 2) break; // carousel exhausted or wrapped back to start
+        } else {
+          stagnantRounds = 0;
+          lastSeenCount = tiles.length;
+        }
+
+        navClicks += 1;
+        await C.clickSafely(chevron);
+        await C.humanDelay();
+        continue;
+      }
+
+      var el = pending[0];
+      var key = tileKey(el);
+
+      try {
+        await C.clickSafely(el);
+        added += 1;
+        processed.add(key);
+        saveProcessed(processed);
+
+        if (!guard.recordClick()) {
+          t.update({ title: 'CC Offers — Chase', message: 'Stopped: hit the ' + C.MAX_CLICKS_PER_RUN + '-click safety cap.' });
+          break;
+        }
+      } catch (e) {
+        errors += 1;
+        // Mark as processed even on failure so a broken tile doesn't
+        // loop forever re-attempting the same click.
+        processed.add(key);
+        saveProcessed(processed);
+        console.error('[cc-offers/chase] click failed', e);
+
+        if (!guard.recordError()) {
+          t.update({ title: 'CC Offers — Chase', message: 'Stopped after ' + C.MAX_CONSECUTIVE_ERRORS + ' consecutive errors.' });
+          break;
+        }
+      }
+
+      t.update({ title: 'CC Offers — Chase', message: 'Added ' + added + ' so far…', showStop: true });
+      await C.humanDelay();
+    }
+
+    return { added: added, errors: errors };
+  }
+
+  async function run() {
     if (!onOffersRoute()) return;
 
     var guard = C.runGuard(RUN_KEY);
     if (!guard) return; // already running for this render
 
     var flags = C.flags();
+    var t = C.toast({ title: 'CC Offers — Chase', message: 'Loading offers…' });
+    t.onStop(function () {
+      guard.stopped = true;
+    });
 
-    C.settle(function () {
-      return document.querySelectorAll(
-        'button, [role="button"], input[type="submit"], a[role], select, [role="combobox"], [role="listbox"]'
-      ).length;
-    }).then(function () {
-      if (flags.debug) {
-        var candidates = C.discoverCandidates(document);
-        C.debugDump(candidates);
-        var t = C.toast({
-          title: 'CC Offers — Chase',
-          message: 'Discovery dump rendered above (' + candidates.length + ' candidates). Copy the text box and share it back.',
-        });
-        window.setTimeout(function () {
-          t.remove();
-        }, 15000);
-      } else {
-        var t2 = C.toast({
+    try {
+      await C.settle(function () {
+        return document.querySelectorAll(TILE_SELECTOR).length;
+      });
+
+      var untouchedGrid = countUntouchedGridTiles();
+
+      if (flags.dryRun) {
+        var wouldAdd = Array.prototype.filter.call(document.querySelectorAll(TILE_SELECTOR), isCarouselAddableTile).length;
+        t.update({
           title: 'CC Offers — Chase',
           message:
-            'Discovery build — no clicking yet. Add <code>#ccoffers=debug</code> alongside the route hash and reload to dump candidates.',
+            'Dry run: would add ' + wouldAdd + ' carousel offers · ' + untouchedGrid + ' grid offers not automated · clicked nothing.',
         });
-        window.setTimeout(function () {
-          t2.remove();
-        }, 8000);
+        guard.release();
+        return;
       }
 
+      var result = await processCarousel(guard, t);
+
+      t.update({
+        title: 'CC Offers — Chase',
+        message:
+          'Carousel: added ' + result.added + ', errors ' + result.errors + '. ' +
+          untouchedGrid + ' "All Offers" grid offers not automated yet.',
+      });
+      window.setTimeout(function () {
+        t.remove();
+      }, 15000);
+
       guard.release();
-    }).catch(function (err) {
+    } catch (err) {
       console.error('[cc-offers/chase]', err);
+      t.update({ title: 'CC Offers — Chase', message: 'Error: ' + err.message });
       guard.release();
-    });
+    }
   }
 
-  // Chase's dashboard is a single-page app: navigating to the offers
-  // screen after initial load changes the hash without a full page
-  // load, so document-idle alone would miss it. Re-check on every
-  // hash change in addition to the initial run.
+  // Chase's dashboard is a single-page app: navigating to the offers screen
+  // after initial load changes the hash without a full page load, so
+  // document-idle alone would miss it. Re-check on every hash change too.
   window.addEventListener('hashchange', run);
   run();
 })();

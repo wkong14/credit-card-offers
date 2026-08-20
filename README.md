@@ -8,13 +8,42 @@ browser already has open and authenticated.
 Full design rationale and phased plan: see the plan this repo was built
 from (ask the assistant that generated this repo if you need it again).
 
-## Status: Phase 1 — discovery
+## Status: Phase 2 — live, partially
 
-The scripts in `dist/` right now **click nothing**. They only render a
-grouped dump of candidate elements on the offers page, because the real
-DOM structure of `secure.chase.com` and `global.americanexpress.com`
-can't be seen from outside an authenticated session. That dump is what
-Phase 2 (the actual clicking logic) gets built against.
+- **Amex** (`amex-offers.user.js`): fully automated. Clicks every
+  `[data-testid="merchantOfferListAddButton"]` on the page. Already-added
+  offers don't render that button at all, so no extra skip logic was
+  needed — confirmed from a real discovery dump.
+- **Chase** (`chase-offers.user.js`): automates the personalized
+  carousel only (~18 offers, tiles whose label ends in "Add Offer").
+  The big "All Offers" grid (~107 offers) is **not automated** — those
+  tiles have no separate Add button anywhere in the DOM, and it's not
+  yet known whether clicking one adds inline or navigates to a detail
+  page with a different button. Automating that blindly risks clicking
+  the wrong thing on a live bank account, so it's deliberately left
+  alone until confirmed. See "Resolving the Chase grid" below.
+
+The carousel automation is written to be resumable (progress tracked in
+`sessionStorage`) specifically because that navigate-vs-inline question
+was still open when it was built — so it degrades safely either way
+rather than assuming one behavior.
+
+## Resolving the Chase grid
+
+To finish Chase, one manual observation is needed: on the merchant
+offers screen, tap **one** "All Offers" grid tile that has no "Add
+Offer" text (e.g. one showing just `"N of 107 <merchant> X% cash
+back"`) — a normal tap, not through the script — and note:
+
+- Does a separate page or modal open with its own distinct "Add to
+  card" button, or does the tile itself just update in place to show
+  it's been added?
+- If a new page/modal opens: what does its URL hash become, and can you
+  run discovery mode there too (`&ccoffers=debug` appended) to dump its
+  Add button's selector?
+
+Report that back and the grid can be automated the same way as the
+carousel.
 
 ## One-time setup (do this first)
 

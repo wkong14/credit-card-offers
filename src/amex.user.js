@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CC Offers — Amex (discovery build)
+// @name         CC Offers — Amex
 // @namespace    credit-card-offers
 // @version      0.1.0
-// @description  Phase 1: dumps candidate elements on the Amex Offers page so real selectors can be identified. Does not click anything.
+// @description  Adds every available Amex Offer to the currently-selected card.
 // @author       you
 // @match        https://global.americanexpress.com/offers*
 // @updateURL    https://raw.githubusercontent.com/wkong14/credit-card-offers/main/dist/amex-offers.user.js
@@ -19,43 +19,107 @@
   var C = window.CCOffersCore;
   var RUN_KEY = 'amex';
 
-  function main() {
+  // Confirmed via discovery mode (Phase 1 dump):
+  // - Add button: <button data-testid="merchantOfferListAddButton"> "add to list card"
+  // - Already-added offers simply don't render that button at all — the tile
+  //   becomes a plain link/anchor instead (its aria-label contains "Added").
+  //   So there's no separate "skip already-added" filter needed on the button
+  //   set itself; we only use the tile-level check to report an accurate count
+  //   in the toast.
+  var ADD_BUTTON_SELECTOR = '[data-testid="merchantOfferListAddButton"]';
+  var TILE_SELECTOR = '[data-cy="commerce-tile"], [data-testid="commerce-tile"]';
+  var ADDED_RE = /\badded\b/i;
+
+  function collectAddButtons() {
+    return Array.prototype.filter.call(document.querySelectorAll(ADD_BUTTON_SELECTOR), function (el) {
+      return !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    });
+  }
+
+  function countAlreadyAdded() {
+    return Array.prototype.filter.call(document.querySelectorAll(TILE_SELECTOR), function (el) {
+      return ADDED_RE.test(C.accName(el));
+    }).length;
+  }
+
+  async function main() {
     var guard = C.runGuard(RUN_KEY);
     if (!guard) return; // already running on this page (SPA re-render)
 
     var flags = C.flags();
+    var t = C.toast({ title: 'CC Offers — Amex', message: 'Loading offers…' });
+    t.onStop(function () {
+      guard.stopped = true;
+    });
 
-    C.settle(function () {
-      return document.querySelectorAll(
-        'button, [role="button"], input[type="submit"], a[role], select, [role="combobox"], [role="listbox"]'
-      ).length;
-    }).then(function () {
-      if (flags.debug) {
-        var candidates = C.discoverCandidates(document);
-        C.debugDump(candidates);
-        var t = C.toast({
+    try {
+      await C.settle(function () {
+        return document.querySelectorAll(TILE_SELECTOR).length;
+      });
+
+      var alreadyAdded = countAlreadyAdded();
+      var added = 0;
+      var errors = 0;
+
+      if (flags.dryRun) {
+        var wouldAdd = collectAddButtons().length;
+        t.update({
           title: 'CC Offers — Amex',
-          message: 'Discovery dump rendered above (' + candidates.length + ' candidates). Copy the text box and share it back.',
+          message: 'Dry run: would add ' + wouldAdd + ' · already added ' + alreadyAdded + ' · clicked nothing.',
         });
-        window.setTimeout(function () {
-          t.remove();
-        }, 15000);
-      } else {
-        var t2 = C.toast({
-          title: 'CC Offers — Amex',
-          message:
-            'Discovery build — no clicking yet. Add <code>#ccoffers=debug</code> to the URL and reload to dump candidates.',
-        });
-        window.setTimeout(function () {
-          t2.remove();
-        }, 8000);
+        guard.release();
+        return;
       }
 
+      while (!guard.stopped) {
+        var buttons = collectAddButtons();
+        if (buttons.length === 0) break;
+
+        var btn = buttons[0];
+        try {
+          await C.clickSafely(btn);
+          added += 1;
+          if (!guard.recordClick()) {
+            t.update({
+              title: 'CC Offers — Amex',
+              message: 'Stopped: hit the ' + C.MAX_CLICKS_PER_RUN + '-click safety cap.',
+            });
+            break;
+          }
+        } catch (e) {
+          errors += 1;
+          console.error('[cc-offers/amex] click failed', e);
+          if (!guard.recordError()) {
+            t.update({
+              title: 'CC Offers — Amex',
+              message: 'Stopped after ' + C.MAX_CONSECUTIVE_ERRORS + ' consecutive errors.',
+            });
+            break;
+          }
+        }
+
+        t.update({
+          title: 'CC Offers — Amex',
+          message: 'Added ' + added + ' so far…',
+          showStop: true,
+        });
+        await C.humanDelay();
+      }
+
+      t.update({
+        title: 'CC Offers — Amex',
+        message: 'Added ' + added + ' · already added ' + alreadyAdded + ' · errors ' + errors + '.',
+      });
+      window.setTimeout(function () {
+        t.remove();
+      }, 12000);
+
       guard.release();
-    }).catch(function (err) {
+    } catch (err) {
       console.error('[cc-offers/amex]', err);
+      t.update({ title: 'CC Offers — Amex', message: 'Error: ' + err.message });
       guard.release();
-    });
+    }
   }
 
   main();
