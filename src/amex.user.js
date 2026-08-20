@@ -57,6 +57,17 @@
         return document.querySelectorAll(TILE_SELECTOR).length;
       });
 
+      if (flags.debug) {
+        var candidates = C.discoverCandidates(document);
+        C.debugDump(candidates, { html: flags.debugHtml });
+        t.update({
+          title: 'CC Offers — Amex',
+          message: 'Discovery dump rendered above (' + candidates.length + ' candidates). Copy it and share it back.',
+        });
+        guard.release();
+        return;
+      }
+
       var alreadyAdded = countAlreadyAdded();
       var added = 0;
       var errors = 0;

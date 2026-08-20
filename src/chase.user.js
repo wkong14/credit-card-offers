@@ -64,6 +64,12 @@
     return ADD_OFFER_SUFFIX_RE.test(C.accName(el).trim());
   }
 
+  // KNOWN GAP: ADDED_RE only catches an already-added state conveyed as
+  // text. Confirmed by manual observation that Chase's grid instead shows
+  // a green checkmark icon with no accompanying text change, so this
+  // currently can't distinguish an already-added grid tile from an
+  // addable one. That's why processGrid()/gridResult are not wired into
+  // run() below — this function is otherwise ready, just not called yet.
   function isGridAddableTile(el) {
     var name = C.accName(el).trim();
     return !ADD_OFFER_SUFFIX_RE.test(name) && !ADDED_RE.test(name);
@@ -250,6 +256,17 @@
         return document.querySelectorAll(TILE_SELECTOR).length;
       });
 
+      if (flags.debug) {
+        var candidates = C.discoverCandidates(document);
+        C.debugDump(candidates, { html: flags.debugHtml });
+        t.update({
+          title: 'CC Offers — Chase',
+          message: 'Discovery dump rendered above (' + candidates.length + ' candidates). Copy it and share it back.',
+        });
+        guard.release();
+        return;
+      }
+
       if (flags.dryRun) {
         // Undercounts the carousel, since this only reflects tiles
         // currently rendered before any chevron pagination.
@@ -264,16 +281,25 @@
       }
 
       var carouselResult = await processCarousel(guard, t);
-      var gridResult = { added: 0, errors: 0 };
-      if (!guard.stopped) {
-        gridResult = await processGrid(guard, t);
-      }
+
+      // GRID AUTOMATION PAUSED: Chase conveys "already added" on grid
+      // tiles with an icon (a green checkmark), not text — unlike the
+      // carousel/Amex, where the accessible name changes. Our skip-check
+      // is text-only, so it can't currently tell a checkmarked tile
+      // apart from an addable one. Re-clicking an already-added grid
+      // tile might be a harmless no-op, or might remove the offer — that
+      // hasn't been confirmed either way, so this is deliberately
+      // disabled rather than risking a live bank account on a guess.
+      // Re-enable once the checkmark's DOM signature is known: run
+      // discovery mode with `&ccoffers=debughtml` on a view with a
+      // checkmarked tile and add a matching check to isGridAddableTile().
+      var gridResult = { added: 0, errors: 0, paused: true };
 
       t.update({
         title: 'CC Offers — Chase',
         message:
           'Carousel: added ' + carouselResult.added + ', errors ' + carouselResult.errors + '. ' +
-          'Grid: added ' + gridResult.added + ', errors ' + gridResult.errors + '.',
+          'Grid: paused (checkmark detection not yet confirmed) — nothing clicked there.',
       });
       window.setTimeout(function () {
         t.remove();

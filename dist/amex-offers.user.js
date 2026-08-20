@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Amex
 // @namespace    credit-card-offers
-// @version      0.1.3
+// @version      0.1.4
 // @description  Adds every available Amex Offer to the currently-selected card.
 // @author       you
 // @match        https://global.americanexpress.com/offers*
@@ -45,17 +45,22 @@
   // ---------------------------------------------------------------------
   function flags() {
     var hash = String(global.location.hash || '');
+    // "debughtml" is a superset of "debug" (matches both regexes below by
+    // design) — it means "dump candidates, AND include markup snippets,"
+    // not a separate mode.
     var debug = /ccoffers=debug/i.test(hash);
+    var debugHtml = /ccoffers=debughtml/i.test(hash);
     var dryRun = /ccoffers=dryrun/i.test(hash);
 
     try {
       if (!debug && global.localStorage.getItem('ccOffersDebug')) debug = true;
+      if (!debugHtml && global.localStorage.getItem('ccOffersDebugHtml')) debugHtml = true;
       if (!dryRun && global.localStorage.getItem('ccOffersDryRun')) dryRun = true;
     } catch (e) {
       // localStorage can throw in locked-down contexts; hash flags still work.
     }
 
-    return { debug: debug, dryRun: dryRun };
+    return { debug: debug, debugHtml: debugHtml, dryRun: dryRun };
   }
 
   // ---------------------------------------------------------------------
@@ -402,7 +407,27 @@
     return attrs.join(' ');
   }
 
-  function debugDump(candidates) {
+  // A "state" conveyed only by an icon (e.g. a checkmark with no
+  // accompanying text) is invisible to accName()/describeAttrs(), which
+  // only look at the candidate's OWN attributes and text — not its
+  // children. This is what surfaces that: a bounded, whitespace-collapsed
+  // snippet of the element's actual markup, so an inner <svg>/<img>/class
+  // name shows up in the dump instead of silently vanishing.
+  var HTML_SNIPPET_MAX_LEN = 220;
+
+  function htmlSnippet(el) {
+    var html = '';
+    try {
+      html = el.outerHTML || '';
+    } catch (e) {
+      html = '';
+    }
+    html = html.replace(/\s+/g, ' ').trim();
+    return html.length > HTML_SNIPPET_MAX_LEN ? html.slice(0, HTML_SNIPPET_MAX_LEN) + '…' : html;
+  }
+
+  function debugDump(candidates, opts) {
+    var includeHtml = !!(opts && opts.html);
     var normalized = candidates.map(function (item) {
       if (item && item.el) return item;
       var name = accName(item);
@@ -422,7 +447,7 @@
       })
       .map(function (g) {
         var lines = groups[g].map(function (item, i) {
-          return (
+          var line =
             '  #' +
             i +
             ' <' +
@@ -430,8 +455,11 @@
             '> name="' +
             item.name +
             '" ' +
-            describeAttrs(item.el)
-          );
+            describeAttrs(item.el);
+          if (includeHtml) {
+            line += '\n      html: ' + htmlSnippet(item.el);
+          }
+          return line;
         });
         return '== ' + g + ' (' + groups[g].length + ') ==\n' + lines.join('\n');
       });
@@ -463,6 +491,7 @@
     toast: toast,
     runGuard: runGuard,
     debugDump: debugDump,
+    htmlSnippet: htmlSnippet,
     discoverCandidates: discoverCandidates,
     classify: classify,
     MAX_CLICKS_PER_RUN: MAX_CLICKS_PER_RUN,
@@ -514,6 +543,17 @@
       await C.settle(function () {
         return document.querySelectorAll(TILE_SELECTOR).length;
       });
+
+      if (flags.debug) {
+        var candidates = C.discoverCandidates(document);
+        C.debugDump(candidates, { html: flags.debugHtml });
+        t.update({
+          title: 'CC Offers — Amex',
+          message: 'Discovery dump rendered above (' + candidates.length + ' candidates). Copy it and share it back.',
+        });
+        guard.release();
+        return;
+      }
 
       var alreadyAdded = countAlreadyAdded();
       var added = 0;

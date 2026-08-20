@@ -8,30 +8,48 @@ browser already has open and authenticated.
 Full design rationale and phased plan: see the plan this repo was built
 from (ask the assistant that generated this repo if you need it again).
 
-## Status: Phase 2 — both issuers fully automated
+## Status: Phase 2 — Amex done, Chase grid paused
 
-- **Amex** (`amex-offers.user.js`): clicks every
+- **Amex** (`amex-offers.user.js`): fully automated. Clicks every
   `[data-testid="merchantOfferListAddButton"]` on the page. Already-added
   offers don't render that button at all, so no extra skip logic was
   needed — confirmed from a real discovery dump.
-- **Chase** (`chase-offers.user.js`): automates both offer surfaces —
-  the personalized carousel (~18 offers, tiles whose label ends in
-  "Add Offer", paginated via the right chevron) and the full "All
-  Offers" grid (~107 offers, tile click itself is the add action).
-  Confirmed by manually tapping a grid tile that it adds inline with no
-  navigation, so both surfaces use the same click-and-track approach.
+- **Chase** (`chase-offers.user.js`): the personalized carousel (~18
+  offers, tiles whose label ends in "Add Offer", paginated via the
+  right chevron) is fully automated and confirmed working. The full
+  "All Offers" grid (~107 offers) **is intentionally paused** — see
+  below.
 
 Both adapters are resumable (progress tracked in `sessionStorage`) —
 belt-and-suspenders against a reload or Stop mid-run interrupting a
-batch, not because inline-vs-navigate is still in question.
+batch.
 
-## Known unknowns worth flagging
+## Why the Chase grid is paused
 
-- Neither discovery dump nor the manual grid test surfaced a confirmed
-  "already added" *grid* tile on Chase (only Amex showed one). The
-  grid's skip-filter (`/\badded\b/i`) is a best-effort guess based on
-  Amex's wording, not something directly observed on Chase. If Chase
-  re-clicks something already added, that's the first place to check.
+Clicking a grid tile was confirmed (by manually tapping one) to add the
+offer inline, same as the carousel — so the click target isn't the
+open question anymore. What's still unknown: **how an already-added
+grid tile is marked.** It's a plain green checkmark icon, with no
+accompanying text change to the tile's accessible name — confirmed by
+looking at one. The carousel and Amex both convey that state as text
+(`"...Added"`), which the skip-filter (`/\badded\b/i`) can detect; a
+pure icon is invisible to that check. Without knowing the checkmark's
+actual DOM signature, the script can't yet tell a checkmarked tile
+apart from an addable one, and clicking an already-added tile again is
+an unconfirmed action on a live account — it isn't known whether that's
+a harmless no-op or whether it removes the offer. So `processGrid()` in
+`src/chase.user.js` is fully implemented but **not called** from `run()`
+— grid tiles are left untouched until this is resolved.
+
+**To finish this:** run discovery mode on the merchant offers screen
+with a checkmarked tile visible, using `&ccoffers=debughtml` (note the
+extra `html` — this appends a raw markup snippet for every candidate,
+which a plain text dump doesn't capture, since an icon-only state lives
+in a child element/class, not the tile's own text or aria-label). Share
+back the dump lines for a checkmarked tile specifically. Once the
+signature is known (an SVG, a class name, a `data-testid` on the icon,
+etc.), add a matching check to `isGridAddableTile()` in
+`src/chase.user.js` and wire `processGrid()` back into `run()`.
 
 ## One-time setup (do this first)
 
@@ -59,7 +77,9 @@ automatically), and the phone will pick it up on its own via
 
 ## Running discovery mode
 
-Both scripts are inert by default. To make them dump candidates:
+Both scripts click nothing when this is active — use it any time a
+selector needs to be found or re-found (first setup, or after a bank
+reskins its site):
 
 - **Amex:** go to `https://global.americanexpress.com/offers`, switch to
   **Request Desktop Website** (aA button → Request Desktop Website),
@@ -68,6 +88,12 @@ Both scripts are inert by default. To make them dump candidates:
   dashboard (desktop mode), then append `&ccoffers=debug` (if the URL
   already has a `#...` route) or `#ccoffers=debug` (if it doesn't) and
   reload.
+
+Use `ccoffers=debughtml` instead of `ccoffers=debug` when a candidate's
+*state* is conveyed by something other than text — an icon, a class, a
+child element — since the plain dump only shows each candidate's own
+text/aria-label/data-* attributes, not its markup. `debughtml` appends a
+raw HTML snippet per candidate so that kind of thing becomes visible.
 
 A text box will appear at the top of the page with every candidate
 element found, grouped into:
