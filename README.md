@@ -8,48 +8,47 @@ browser already has open and authenticated.
 Full design rationale and phased plan: see the plan this repo was built
 from (ask the assistant that generated this repo if you need it again).
 
-## Status: Phase 2 — Amex done, Chase grid paused
+## Status: Phase 2 — Amex done, Chase paused (both surfaces)
 
 - **Amex** (`amex-offers.user.js`): fully automated. Clicks every
   `[data-testid="merchantOfferListAddButton"]` on the page. Already-added
   offers don't render that button at all, so no extra skip logic was
   needed — confirmed from a real discovery dump.
-- **Chase** (`chase-offers.user.js`): the personalized carousel (~18
-  offers, tiles whose label ends in "Add Offer", paginated via the
-  right chevron) is fully automated and confirmed working. The full
-  "All Offers" grid (~107 offers) **is intentionally paused** — see
-  below.
+- **Chase** (`chase-offers.user.js`): **clicks nothing right now, on
+  either surface.** `processCarousel()` and `processGrid()` are both
+  fully implemented but neither is called from `run()`. See below.
 
-Both adapters are resumable (progress tracked in `sessionStorage`) —
-belt-and-suspenders against a reload or Stop mid-run interrupting a
-batch.
+## Why Chase is fully paused
 
-## Why the Chase grid is paused
+Clicking a grid tile was manually tested and turned out to **navigate
+to a separate detail page** — one showing the offer's terms and an
+"Added to card" state — not an inline add. That contradicts the
+assumption `processCarousel()` was built on (that a tile labeled "Add
+Offer" adds without leaving the page), and that assumption was never
+actually live-verified, just inferred from label text. So it's no
+longer trusted either — both surfaces are paused together rather than
+leaving the carousel running on an unconfirmed guess.
 
-Clicking a grid tile was confirmed (by manually tapping one) to add the
-offer inline, same as the carousel — so the click target isn't the
-open question anymore. What's still unknown: **how an already-added
-grid tile is marked.** It's a plain green checkmark icon, with no
-accompanying text change to the tile's accessible name — confirmed by
-looking at one. The carousel and Amex both convey that state as text
-(`"...Added"`), which the skip-filter (`/\badded\b/i`) can detect; a
-pure icon is invisible to that check. Without knowing the checkmark's
-actual DOM signature, the script can't yet tell a checkmarked tile
-apart from an addable one, and clicking an already-added tile again is
-an unconfirmed action on a live account — it isn't known whether that's
-a harmless no-op or whether it removes the offer. So `processGrid()` in
-`src/chase.user.js` is fully implemented but **not called** from `run()`
-— grid tiles are left untouched until this is resolved.
+What's missing to build this correctly:
 
-**To finish this:** run discovery mode on the merchant offers screen
-with a checkmarked tile visible, using `&ccoffers=debughtml` (note the
-extra `html` — this appends a raw markup snippet for every candidate,
-which a plain text dump doesn't capture, since an icon-only state lives
-in a child element/class, not the tile's own text or aria-label). Share
-back the dump lines for a checkmarked tile specifically. Once the
-signature is known (an SVG, a class name, a `data-testid` on the icon,
-etc.), add a matching check to `isGridAddableTile()` in
-`src/chase.user.js` and wire `processGrid()` back into `run()`.
+1. Does clicking a **carousel** tile also navigate to a detail page, or
+   does it genuinely add inline? Still unconfirmed.
+2. The detail page's real "Add to Card" button selector, and its
+   "Added to Card" confirmation-state selector — needed to know whether
+   a click there is required, or landing on the page is enough.
+3. A way back to the offers list from the detail page (a Back/X
+   control, or `window.history.back()`), and that page's own route, so
+   the route guard can recognize it.
+
+**To finish this:** run discovery mode — `&ccoffers=debughtml` — on the
+detail page itself (the one showing "Added to card"), and share that
+dump back. Also worth a manual check: does tapping a *carousel* tile
+navigate the same way, or stay on the offers page? Once the real flow
+is known, `processCarousel()`/`processGrid()` need a second step added
+— after the tile click navigates, find and click the actual Add button
+(if not already added), then navigate back before the next tile —
+rather than the current single-click-and-count logic, which assumes no
+such step exists.
 
 ## One-time setup (do this first)
 

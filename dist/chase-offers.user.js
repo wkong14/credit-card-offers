@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Chase
 // @namespace    credit-card-offers
-// @version      0.1.4
+// @version      0.1.5
 // @description  Adds every available Chase offer (personalized carousel + full "All Offers" grid) to the currently-selected card.
 // @author       you
 // @match        https://secure.chase.com/*
@@ -767,26 +767,38 @@
         return;
       }
 
-      var carouselResult = await processCarousel(guard, t);
-
-      // GRID AUTOMATION PAUSED: Chase conveys "already added" on grid
-      // tiles with an icon (a green checkmark), not text — unlike the
-      // carousel/Amex, where the accessible name changes. Our skip-check
-      // is text-only, so it can't currently tell a checkmarked tile
-      // apart from an addable one. Re-clicking an already-added grid
-      // tile might be a harmless no-op, or might remove the offer — that
-      // hasn't been confirmed either way, so this is deliberately
-      // disabled rather than risking a live bank account on a guess.
-      // Re-enable once the checkmark's DOM signature is known: run
-      // discovery mode with `&ccoffers=debughtml` on a view with a
-      // checkmarked tile and add a matching check to isGridAddableTile().
+      // ALL CLICKING PAUSED, both surfaces. Confirmed by manually clicking
+      // a grid tile: it navigates to a separate detail page showing the
+      // offer's terms and an "Added to card" state — it is NOT an inline
+      // add. That contradicts the assumption processCarousel() was built
+      // on (that an "Add Offer"-labeled tile adds without leaving the
+      // page), which was never actually live-verified — so that
+      // assumption is no longer trusted either, not just the grid's.
+      //
+      // What's missing to build this correctly:
+      //   1. Does clicking a CAROUSEL tile ALSO navigate to a detail
+      //      page, or does it genuinely add inline? Unconfirmed.
+      //   2. The detail page's real "Add to Card" button selector, and
+      //      its "Added to Card" confirmation-state selector (needed
+      //      to know whether a click there is required, or whether
+      //      landing on the page is enough).
+      //   3. A way back to the offers list from the detail page (a
+      //      Back/X control, or reliance on window.history.back()) and
+      //      that page's own route, so onOffersRoute() can recognize it.
+      //
+      // Get all three via discovery mode (`&ccoffers=debughtml`) run ON
+      // the detail page itself, plus one more manual check on a carousel
+      // tile. Once known, processCarousel()/processGrid() need a second
+      // step added: after the tile click navigates, locate and click the
+      // real Add button (if not already added), then navigate back
+      // before moving to the next tile — not the single-click-and-count
+      // logic currently written below, which assumes no such step.
+      var carouselResult = { added: 0, errors: 0, paused: true };
       var gridResult = { added: 0, errors: 0, paused: true };
 
       t.update({
         title: 'CC Offers — Chase',
-        message:
-          'Carousel: added ' + carouselResult.added + ', errors ' + carouselResult.errors + '. ' +
-          'Grid: paused (checkmark detection not yet confirmed) — nothing clicked there.',
+        message: 'Paused — the real add flow (tile → detail page → Add button) isn\'t confirmed yet. Nothing was clicked.',
       });
       window.setTimeout(function () {
         t.remove();

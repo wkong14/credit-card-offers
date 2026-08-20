@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Amex
 // @namespace    credit-card-offers
-// @version      0.1.4
+// @version      0.1.5
 // @description  Adds every available Amex Offer to the currently-selected card.
 // @author       you
 // @match        https://global.americanexpress.com/offers*
