@@ -8,42 +8,30 @@ browser already has open and authenticated.
 Full design rationale and phased plan: see the plan this repo was built
 from (ask the assistant that generated this repo if you need it again).
 
-## Status: Phase 2 — live, partially
+## Status: Phase 2 — both issuers fully automated
 
-- **Amex** (`amex-offers.user.js`): fully automated. Clicks every
+- **Amex** (`amex-offers.user.js`): clicks every
   `[data-testid="merchantOfferListAddButton"]` on the page. Already-added
   offers don't render that button at all, so no extra skip logic was
   needed — confirmed from a real discovery dump.
-- **Chase** (`chase-offers.user.js`): automates the personalized
-  carousel only (~18 offers, tiles whose label ends in "Add Offer").
-  The big "All Offers" grid (~107 offers) is **not automated** — those
-  tiles have no separate Add button anywhere in the DOM, and it's not
-  yet known whether clicking one adds inline or navigates to a detail
-  page with a different button. Automating that blindly risks clicking
-  the wrong thing on a live bank account, so it's deliberately left
-  alone until confirmed. See "Resolving the Chase grid" below.
+- **Chase** (`chase-offers.user.js`): automates both offer surfaces —
+  the personalized carousel (~18 offers, tiles whose label ends in
+  "Add Offer", paginated via the right chevron) and the full "All
+  Offers" grid (~107 offers, tile click itself is the add action).
+  Confirmed by manually tapping a grid tile that it adds inline with no
+  navigation, so both surfaces use the same click-and-track approach.
 
-The carousel automation is written to be resumable (progress tracked in
-`sessionStorage`) specifically because that navigate-vs-inline question
-was still open when it was built — so it degrades safely either way
-rather than assuming one behavior.
+Both adapters are resumable (progress tracked in `sessionStorage`) —
+belt-and-suspenders against a reload or Stop mid-run interrupting a
+batch, not because inline-vs-navigate is still in question.
 
-## Resolving the Chase grid
+## Known unknowns worth flagging
 
-To finish Chase, one manual observation is needed: on the merchant
-offers screen, tap **one** "All Offers" grid tile that has no "Add
-Offer" text (e.g. one showing just `"N of 107 <merchant> X% cash
-back"`) — a normal tap, not through the script — and note:
-
-- Does a separate page or modal open with its own distinct "Add to
-  card" button, or does the tile itself just update in place to show
-  it's been added?
-- If a new page/modal opens: what does its URL hash become, and can you
-  run discovery mode there too (`&ccoffers=debug` appended) to dump its
-  Add button's selector?
-
-Report that back and the grid can be automated the same way as the
-carousel.
+- Neither discovery dump nor the manual grid test surfaced a confirmed
+  "already added" *grid* tile on Chase (only Amex showed one). The
+  grid's skip-filter (`/\badded\b/i`) is a best-effort guess based on
+  Amex's wording, not something directly observed on Chase. If Chase
+  re-clicks something already added, that's the first place to check.
 
 ## One-time setup (do this first)
 
