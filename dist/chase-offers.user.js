@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CC Offers — Chase
 // @namespace    credit-card-offers
-// @version      0.1.7
+// @version      0.1.8
 // @description  Adds every available Chase offer (personalized carousel + full "All Offers" grid) to the currently-selected card.
 // @author       you
 // @match        https://secure.chase.com/*
@@ -560,6 +560,8 @@
   var ADD_OFFER_SUFFIX_RE = /\badd offer\s*$/i;
   var ADDED_RE = /\badded\b/i;
   var LEADING_ORDINAL_RE = /^\d+\s+of\s+\d+\s*/i;
+  var ADDED_CONFIRMATION_RE = /added to (your\s+)?card/i;
+  var MAX_TILE_ATTEMPTS = 2; // one retry before giving up on a single offer
 
   var CAROUSEL_PROCESSED_KEY = 'ccOffersChaseProcessedCarousel';
   var GRID_PROCESSED_KEY = 'ccOffersChaseProcessedGrid';
@@ -576,17 +578,38 @@
   }
 
   // A tile click both adds the offer AND navigates to its detail page
-  // (confirmed by manual test) — so after every successful click, come
-  // back before looking for the next tile. Only acts if we actually
-  // left, so a click that turns out not to navigate (unexpected, but
-  // not proven impossible) doesn't trigger a stray back-navigation.
-  async function returnToOffersList() {
+  // (confirmed by manual test), showing text matching ADDED_CONFIRMATION_RE
+  // — this is what confirmAdded() waits for, so a click only counts as a
+  // real success once actually verified, not just because the click event
+  // fired without throwing. A slow page load (real-world Chase latency,
+  // not something this script can shortcut) previously meant a click
+  // could be counted as "added" before the add had actually happened,
+  // which is the likely cause of offers silently not going through.
+  async function confirmAdded() {
     try {
       await C.waitFor(function () {
-        return !stillOnOffersList();
-      }, 4000);
+        return ADDED_CONFIRMATION_RE.test(document.body.textContent || '');
+      }, 6000);
+      return true;
     } catch (e) {
-      return; // never left — nothing to return from
+      return false;
+    }
+  }
+
+  // Comes back to the offers list after a tile click. `knownToHaveLeft`
+  // skips the initial "did we navigate" poll when the caller already
+  // confirmed it via confirmAdded() (avoids a redundant wait in the
+  // common case); otherwise it checks first, since a click that turns
+  // out not to have navigated shouldn't trigger a stray back-navigation.
+  async function returnToOffersList(knownToHaveLeft) {
+    if (!knownToHaveLeft) {
+      try {
+        await C.waitFor(function () {
+          return !stillOnOffersList();
+        }, 4000);
+      } catch (e) {
+        return; // never left — nothing to return from
+      }
     }
 
     window.history.back();
@@ -598,6 +621,59 @@
     }
     await C.settle(function () {
       return document.querySelectorAll(TILE_SELECTOR).length;
+    });
+  }
+
+  // Clicks one tile and verifies it actually added before counting it.
+  // Returns 'added', 'retry' (caller should try the same tile again —
+  // it stays in `processed`-excluded state since its key was never
+  // added), or 'gaveup' (failed confirmation MAX_TILE_ATTEMPTS times;
+  // marked processed anyway so a systematically broken tile can't loop
+  // forever). A thrown click error is treated the same as 'gaveup',
+  // immediately, since retrying a click that itself failed to fire is
+  // less likely to help than retrying one that fired but wasn't
+  // confirmed in time.
+  async function attemptAddTile(el, key, processed, storageKey, retryCounts, label) {
+    try {
+      await C.clickSafely(el);
+    } catch (e) {
+      console.error('[cc-offers/chase] ' + label + ' click failed for', key, e);
+      processed.add(key);
+      saveProcessed(storageKey, processed);
+      return 'gaveup';
+    }
+
+    var confirmed = await confirmAdded();
+
+    if (confirmed) {
+      processed.add(key);
+      saveProcessed(storageKey, processed);
+      await returnToOffersList(true);
+      return 'added';
+    }
+
+    retryCounts[key] = (retryCounts[key] || 0) + 1;
+    await returnToOffersList(false);
+
+    if (retryCounts[key] >= MAX_TILE_ATTEMPTS) {
+      processed.add(key);
+      saveProcessed(storageKey, processed);
+      console.error('[cc-offers/chase] ' + label + ' gave up on', key, 'after', retryCounts[key], 'unconfirmed attempts');
+      return 'gaveup';
+    }
+
+    return 'retry';
+  }
+
+  // Real pacing between tile clicks is provided by the click's own
+  // navigate/confirm/return round-trip — this is just enough of a pause
+  // to not immediately hammer the next click, not the ~1-2s human-style
+  // delay used for Amex's genuinely-instant inline clicks (there is no
+  // equivalent real-world pacing to lean on there).
+  function briefDelay() {
+    var ms = 250 + Math.floor(Math.random() * 350);
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, ms);
     });
   }
 
@@ -650,6 +726,7 @@
   // picks up where it left off instead of re-clicking or losing count.
   async function processCarousel(guard, t) {
     var processed = loadProcessed(CAROUSEL_PROCESSED_KEY);
+    var retryCounts = {};
     var added = 0;
     var errors = 0;
     var navClicks = 0;
@@ -684,34 +761,26 @@
 
       var el = pending[0];
       var key = tileKey(el);
+      var outcome = await attemptAddTile(el, key, processed, CAROUSEL_PROCESSED_KEY, retryCounts, 'carousel');
 
-      try {
-        await C.clickSafely(el);
+      if (outcome === 'added') {
         added += 1;
-        processed.add(key);
-        saveProcessed(CAROUSEL_PROCESSED_KEY, processed);
-        await returnToOffersList();
-
         if (!guard.recordClick()) {
           t.update({ title: 'CC Offers — Chase', message: 'Stopped: hit the ' + C.MAX_CLICKS_PER_RUN + '-click safety cap.' });
           break;
         }
-      } catch (e) {
+      } else if (outcome === 'gaveup') {
         errors += 1;
-        // Mark as processed even on failure so a broken tile doesn't
-        // loop forever re-attempting the same click.
-        processed.add(key);
-        saveProcessed(CAROUSEL_PROCESSED_KEY, processed);
-        console.error('[cc-offers/chase] carousel click failed', e);
-
         if (!guard.recordError()) {
           t.update({ title: 'CC Offers — Chase', message: 'Stopped after ' + C.MAX_CONSECUTIVE_ERRORS + ' consecutive errors.' });
           break;
         }
       }
+      // 'retry': loop again — this tile's key was never added to
+      // `processed`, so it's picked up again next iteration.
 
       t.update({ title: 'CC Offers — Chase', message: 'Carousel: added ' + added + ' so far…', showStop: true });
-      await C.humanDelay();
+      await briefDelay();
     }
 
     return { added: added, errors: errors };
@@ -723,6 +792,7 @@
   // added and the layout shifts.
   async function processGrid(guard, t) {
     var processed = loadProcessed(GRID_PROCESSED_KEY);
+    var retryCounts = {};
     var added = 0;
     var errors = 0;
     var stagnantRounds = 0;
@@ -751,32 +821,26 @@
 
       var el = pending[0];
       var key = tileKey(el);
+      var outcome = await attemptAddTile(el, key, processed, GRID_PROCESSED_KEY, retryCounts, 'grid');
 
-      try {
-        await C.clickSafely(el);
+      if (outcome === 'added') {
         added += 1;
-        processed.add(key);
-        saveProcessed(GRID_PROCESSED_KEY, processed);
-        await returnToOffersList();
-
         if (!guard.recordClick()) {
           t.update({ title: 'CC Offers — Chase', message: 'Stopped: hit the ' + C.MAX_CLICKS_PER_RUN + '-click safety cap.' });
           break;
         }
-      } catch (e) {
+      } else if (outcome === 'gaveup') {
         errors += 1;
-        processed.add(key);
-        saveProcessed(GRID_PROCESSED_KEY, processed);
-        console.error('[cc-offers/chase] grid click failed', e);
-
         if (!guard.recordError()) {
           t.update({ title: 'CC Offers — Chase', message: 'Stopped after ' + C.MAX_CONSECUTIVE_ERRORS + ' consecutive errors.' });
           break;
         }
       }
+      // 'retry': loop again — this tile's key was never added to
+      // `processed`, so it's picked up again next iteration.
 
       t.update({ title: 'CC Offers — Chase', message: 'Grid: added ' + added + ' so far…', showStop: true });
-      await C.humanDelay();
+      await briefDelay();
     }
 
     return { added: added, errors: errors };

@@ -18,10 +18,17 @@ from (ask the assistant that generated this repo if you need it again).
   personalized carousel (~18 offers) and the full "All Offers" grid
   (~107 offers). Confirmed via manual test that a tile click both adds
   the offer AND navigates to a detail page in one action (not a
-  separate Add button to hunt for). The script clicks the tile, waits
-  to land back on the offers list via plain `history.back()` (confirmed
-  working, same as Safari's own back gesture), then continues to the
-  next tile.
+  separate Add button to hunt for). The script clicks the tile, **waits
+  for that detail page's "Added to card" confirmation text before
+  counting it as done** (a click alone doesn't count — it's only
+  verified once seen), retries once if that confirmation doesn't show
+  up in time, then goes back via plain `history.back()` (confirmed
+  working, same as Safari's own back gesture) before continuing to the
+  next tile. Real-world page-load latency is what makes this slower than
+  Amex's instant inline clicks — that's inherent to Chase's click →
+  navigate → confirm flow, not something to optimize away — but the
+  artificial pacing delay between tiles is much shorter than Amex's,
+  since the navigation itself already provides real-world pacing.
 
 ## Known imprecision: Chase grid already-added detection
 
